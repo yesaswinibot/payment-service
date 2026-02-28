@@ -1,7 +1,7 @@
 package com.paymentplatform.payment_service.service;
 
 import com.paymentplatform.payment_service.dto.GatewayResponse;
-
+import com.paymentplatform.payment_service.dto.MerchantSummaryResponse;
 import com.paymentplatform.payment_service.dto.PaymentRequest;
 import com.paymentplatform.payment_service.dto.PaymentResponse;
 import com.paymentplatform.payment_service.entity.Transaction;
@@ -10,12 +10,15 @@ import com.paymentplatform.payment_service.exception.GatewayTimeoutException;
 import com.paymentplatform.payment_service.exception.TransactionNotFoundException;
 import com.paymentplatform.payment_service.repository.TransactionRepository;
 import com.paymentplatform.payment_service.simulator.GatewaySimulator;
+import com.paymentplatform.payment_service.StateMachine.PaymentStateMachine;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 @Service
@@ -27,16 +30,17 @@ public class PaymentService {
     private final GatewaySimulator gatewaySimulator;
 
     @Transactional
-    public PaymentResponse initiatePayment(PaymentRequest request, String idempotencyKey) {
+    public PaymentResponse initiatePayment(PaymentRequest request,
+                                           String idempotencyKey) {
 
         // 1. Idempotency check
         var existing = transactionRepository.findByIdempotencyKey(idempotencyKey);
         if (existing.isPresent()) {
-            log.info("Duplicate request detected for idempotency key: {}", idempotencyKey);
+            log.info("Duplicate request for key: {}", idempotencyKey);
             return PaymentResponse.fromTransaction(existing.get());
         }
 
-        // 2. Build and save transaction
+        // 2. Create transaction as INITIATED
         Transaction txn = Transaction.builder()
                 .id(UUID.randomUUID().toString())
                 .merchantId(request.getMerchantId())
@@ -52,31 +56,45 @@ public class PaymentService {
         transactionRepository.save(txn);
         log.info("Transaction created: {}", txn.getId());
 
-        // 3. Move to gateway pending
-        txn.setStatus(TransactionStatus.GATEWAY_PENDING);
-        txn.setUpdatedAt(LocalDateTime.now());
-        transactionRepository.save(txn); try {
+        // 3. INITIATED → FRAUD_CHECK_PENDING
+        transition(txn, TransactionStatus.FRAUD_CHECK_PENDING);
+
+        // 4. Fraud check (always passes for now)
+        boolean fraudPassed = true;
+        if (!fraudPassed) {
+            transition(txn, TransactionStatus.FRAUD_REJECTED);
+            txn.setFailureReason("Failed fraud check");
+            transactionRepository.save(txn);
+            return PaymentResponse.fromTransaction(txn);
+        }
+
+        // 5. FRAUD_CHECK_PENDING → GATEWAY_PENDING
+        transition(txn, TransactionStatus.GATEWAY_PENDING);
+
+        // 6. Send to gateway
+        try {
             GatewayResponse gatewayResponse = gatewaySimulator.process(txn);
 
             if (gatewayResponse.isSuccess()) {
-                // Happy path — payment went through
-                txn.setStatus(TransactionStatus.GATEWAY_SUCCESS);
-                txn.setGatewayTransactionId(gatewayResponse.getGatewayTransactionId());
+                transition(txn, TransactionStatus.GATEWAY_SUCCESS);
+                txn.setGatewayTransactionId(
+                        gatewayResponse.getGatewayTransactionId()
+                );
+                transition(txn, TransactionStatus.SETTLEMENT_PENDING);
+
             } else {
-                // Gateway rejected the payment (insufficient funds, card declined)
-                txn.setStatus(TransactionStatus.GATEWAY_FAILED);
+                transition(txn, TransactionStatus.GATEWAY_FAILED);
                 txn.setFailureReason(gatewayResponse.getFailureReason());
             }
 
         } catch (GatewayTimeoutException e) {
-            // Timeout — we don't know if payment went through!
-            // Keep as GATEWAY_PENDING — reconciliation engine will resolve this later
-            log.error("Gateway timeout for txn: {} — marked for reconciliation",
-                    txn.getId());
+            log.error("Gateway timeout for txn: {}", txn.getId());
             txn.setFailureReason("GATEWAY_TIMEOUT - pending reconciliation");
         }
 
-
+        // 7. Save final state
+        txn.setUpdatedAt(LocalDateTime.now());
+        transactionRepository.save(txn);
 
         return PaymentResponse.fromTransaction(txn);
     }
@@ -85,5 +103,62 @@ public class PaymentService {
         Transaction txn = transactionRepository.findById(transactionId)
                 .orElseThrow(() -> new TransactionNotFoundException(transactionId));
         return PaymentResponse.fromTransaction(txn);
+    }
+
+    public List<PaymentResponse> getMerchantTransactions(String merchantId) {
+        List<Transaction> transactions = transactionRepository
+                .findByMerchantIdOrderByInitiatedAtDesc(merchantId);
+        if (transactions.isEmpty()) {
+            throw new TransactionNotFoundException(
+                    "No transactions found for merchant: " + merchantId
+            );
+        }
+        return transactions.stream()
+                .map(PaymentResponse::fromTransaction)
+                .collect(java.util.stream.Collectors.toList());
+    }
+
+    public MerchantSummaryResponse getMerchantSummary(String merchantId) {
+        long total = transactionRepository.countByMerchantId(merchantId);
+        if (total == 0) {
+            throw new TransactionNotFoundException(
+                    "No transactions found for merchant: " + merchantId
+            );
+        }
+        long successful = transactionRepository.countByMerchantIdAndStatus(
+                merchantId, TransactionStatus.GATEWAY_SUCCESS);
+        long failed = transactionRepository.countByMerchantIdAndStatus(
+                merchantId, TransactionStatus.GATEWAY_FAILED);
+        long pending = transactionRepository.countByMerchantIdAndStatus(
+                merchantId, TransactionStatus.GATEWAY_PENDING);
+        BigDecimal totalVolume = transactionRepository.sumAmountByMerchantIdAndStatus(
+                merchantId, TransactionStatus.GATEWAY_SUCCESS);
+        return MerchantSummaryResponse.builder()
+                .merchantId(merchantId)
+                .totalTransactions(total)
+                .successfulTransactions(successful)
+                .failedTransactions(failed)
+                .pendingTransactions(pending)
+                .totalVolume(totalVolume)
+                .successRate(MerchantSummaryResponse
+                        .calculateSuccessRate(successful, total))
+                .build();
+    }
+
+    public List<PaymentResponse> getTransactionsByStatus(TransactionStatus status) {
+        return transactionRepository
+                .findByStatusOrderByInitiatedAtDesc(status)
+                .stream()
+                .map(PaymentResponse::fromTransaction)
+                .collect(java.util.stream.Collectors.toList());
+    }
+
+    private void transition(Transaction txn, TransactionStatus newStatus) {
+        PaymentStateMachine.validateTransition(txn.getStatus(), newStatus);
+        log.info("Transaction {} : {} → {}",
+                txn.getId(), txn.getStatus(), newStatus);
+        txn.setStatus(newStatus);
+        txn.setUpdatedAt(LocalDateTime.now());
+        transactionRepository.save(txn);
     }
 }

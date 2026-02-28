@@ -1,0 +1,14 @@
+package com.paymentplatform.payment_service.exception;
+
+
+import com.paymentplatform.payment_service.enums.TransactionStatus;
+
+public class invalidTransitionException extends RuntimeException {
+
+    public invalidTransitionException(TransactionStatus from,
+                                      TransactionStatus to) {
+        super(String.format(
+                "Cannot transition from %s to %s", from, to
+        ));
+    }
+}
