@@ -1,9 +1,6 @@
 package com.paymentplatform.payment_service.service;
 
-import com.paymentplatform.payment_service.dto.GatewayResponse;
-import com.paymentplatform.payment_service.dto.MerchantSummaryResponse;
-import com.paymentplatform.payment_service.dto.PaymentRequest;
-import com.paymentplatform.payment_service.dto.PaymentResponse;
+import com.paymentplatform.payment_service.dto.*;
 import com.paymentplatform.payment_service.entity.Transaction;
 import com.paymentplatform.payment_service.enums.TransactionStatus;
 import com.paymentplatform.payment_service.exception.GatewayTimeoutException;
@@ -28,6 +25,7 @@ public class PaymentService {
 
     private final TransactionRepository transactionRepository;
     private final GatewaySimulator gatewaySimulator;
+    private final FraudCheckService fraudCheckService;
 
     @Transactional
     public PaymentResponse initiatePayment(PaymentRequest request,
@@ -59,11 +57,11 @@ public class PaymentService {
         // 3. INITIATED → FRAUD_CHECK_PENDING
         transition(txn, TransactionStatus.FRAUD_CHECK_PENDING);
 
-        // 4. Fraud check (always passes for now)
-        boolean fraudPassed = true;
-        if (!fraudPassed) {
+        // 4. Real fraud check
+        FraudCheckResult fraudResult = FraudCheckService.check(txn);
+        if (fraudResult.isFraud()) {
             transition(txn, TransactionStatus.FRAUD_REJECTED);
-            txn.setFailureReason("Failed fraud check");
+            txn.setFailureReason(String.join(", ", fraudResult.getReasons()));
             transactionRepository.save(txn);
             return PaymentResponse.fromTransaction(txn);
         }

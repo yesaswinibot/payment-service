@@ -8,6 +8,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -36,4 +37,10 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
 
     // Total transaction count for a merchant
     long countByMerchantId(String merchantId);
+    @Query("SELECT COUNT(t) FROM Transaction t " +
+            "WHERE t.customerId = :customerId " +
+            "AND t.initiatedAt >= :since")
+    long countByCustomerIdSince(
+            @Param("customerId") String customerId,
+            @Param("since") LocalDateTime since);
 }
