@@ -43,4 +43,9 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
     long countByCustomerIdSince(
             @Param("customerId") String customerId,
             @Param("since") LocalDateTime since);
+    @Query("SELECT t FROM Transaction t WHERE t.status IN :statuses AND t.initiatedAt <= :before")
+    List<Transaction> findStuckTransactions(
+            @Param("statuses") List<TransactionStatus> statuses,
+            @Param("before") LocalDateTime before
+    );
 }

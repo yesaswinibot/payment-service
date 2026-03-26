@@ -18,9 +18,13 @@ import java.util.List;
 @Slf4j
 public class FraudCheckService {
 
-    private static final TransactionRepository transactionRepository = null;
+    private static final List<String> WHITELISTED_MERCHANTS = List.of(
+            "BESCOM", "LIC", "BSNL", "AIRTEL", "TATA_POWER"
+    );
 
-    public static FraudCheckResult check(Transaction txn){
+    private final TransactionRepository transactionRepository;
+
+    public FraudCheckResult check(Transaction txn) {
         List<String> reasons = new ArrayList<>();
         List<String> triggeredRules = new ArrayList<>();
 
@@ -39,7 +43,7 @@ public class FraudCheckService {
         // Run all rules and collect results
         if (checkHighValue(txn)) {
             triggeredRules.add("HIGH_VALUE");
-            reasons.add("Transaction amount exceeds ₹5,00,000 threshold");
+            reasons.add("Transaction amount exceeds INR 500,000 threshold");
         }
 
         if (checkVelocity(txn)) {
@@ -68,29 +72,29 @@ public class FraudCheckService {
 
     }
 
-    private static boolean isWhitelisted(Transaction txn) {
-        List<String> whitelistedMerchants = List.of(
-                "BESCOM", "LIC", "BSNL", "AIRTEL", "TATA_POWER"
-        );
-        return whitelistedMerchants.contains(txn.getMerchantId());
+    private boolean isWhitelisted(Transaction txn) {
+        return WHITELISTED_MERCHANTS.contains(txn.getMerchantId());
     }
 
-    private static boolean checkHighValue(Transaction txn) {
+    private boolean checkHighValue(Transaction txn) {
         return txn.getAmount().compareTo(BigDecimal.valueOf(500000)) > 0;
     }
 
-    private static boolean checkVelocity(Transaction txn) {
-            LocalDateTime fiveMinutesAgo = LocalDateTime.now().minusMinutes(5);
-            long recentTransactions = transactionRepository.countByCustomerIdSince(
-                    txn.getCustomerId(),
-                    fiveMinutesAgo
-            );
-            return recentTransactions > 5;
-        }
+    private boolean checkVelocity(Transaction txn) {
+        LocalDateTime fiveMinutesAgo = LocalDateTime.now().minusMinutes(5);
+        long recentTransactions = transactionRepository.countByCustomerIdSince(
+                txn.getCustomerId(),
+                fiveMinutesAgo
+        );
+        return recentTransactions > 5;
+    }
 
 
-    private static boolean checkUnusualHour(Transaction txn) {
-        int hour = txn.getInitiatedAt().getHour();
-        return hour >= 0 && hour < 5;
+    private boolean checkUnusualHour(Transaction txn) {
+        LocalDateTime initiatedAt = txn.getInitiatedAt() == null
+                ? LocalDateTime.now()
+                : txn.getInitiatedAt();
+        int hour = initiatedAt.getHour();
+        return hour < 5;
     }
 }

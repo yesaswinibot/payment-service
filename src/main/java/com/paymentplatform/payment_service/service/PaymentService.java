@@ -58,7 +58,7 @@ public class PaymentService {
         transition(txn, TransactionStatus.FRAUD_CHECK_PENDING);
 
         // 4. Real fraud check
-        FraudCheckResult fraudResult = FraudCheckService.check(txn);
+        FraudCheckResult fraudResult = fraudCheckService.check(txn);
         if (fraudResult.isFraud()) {
             transition(txn, TransactionStatus.FRAUD_REJECTED);
             txn.setFailureReason(String.join(", ", fraudResult.getReasons()));

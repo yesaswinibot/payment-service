@@ -17,7 +17,7 @@ public class FraudCheckResult{
     private String transactionId;
     private boolean isFraud;
     private List<String> reasons;
-    private List<String>TriggeredRules;
-    private RiskLevel risklevel;
-    private LocalDateTime CheckedAt;
+    private List<String> triggeredRules;
+    private RiskLevel riskLevel;
+    private LocalDateTime checkedAt;
 }
